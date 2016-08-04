@@ -17,23 +17,28 @@ import scala.collection.immutable
 object Xml {
 
   sealed trait ParseEvent
-  sealed trait SimpleParseEvent extends ParseEvent
+  sealed trait TextEvent extends ParseEvent {
+    def text: String
+  }
 
   case object StartDocument extends ParseEvent
   case object EndDocument extends ParseEvent
   final case class StartElement(localName: String, attributes: Map[String, String]) extends ParseEvent
   final case class EndElement(localName: String) extends ParseEvent
-  final case class Characters(text: String) extends ParseEvent
+  final case class Characters(text: String) extends TextEvent
   final case class ProcesssingInstruction(target: Option[String], data: Option[String]) extends ParseEvent
   final case class Comment(text: String) extends ParseEvent
-  final case class CData(text: String) extends ParseEvent
+  final case class CData(text: String) extends TextEvent
 
-  val parser: Flow[ByteString, ParseEvent, NotUsed] = Flow.fromGraph(new StreamingXmlParser)
+  val parser: Flow[ByteString, ParseEvent, NotUsed] =
+    Flow.fromGraph(new StreamingXmlParser)
 
+  def coalesce(maximumTextLength: Int): Flow[ParseEvent, ParseEvent, NotUsed] =
+    Flow.fromGraph(new Coalesce(maximumTextLength))
 
   private class StreamingXmlParser extends GraphStage[FlowShape[ByteString, ParseEvent]] {
-    val in: Inlet[ByteString] = Inlet("XmlParser.in")
-    val out: Outlet[ParseEvent] = Outlet("XmlParser.out")
+    val in: Inlet[ByteString] = Inlet("XML.Parser.in")
+    val out: Outlet[ParseEvent] = Outlet("XML.Parser.out")
     override val shape: FlowShape[ByteString, ParseEvent] = FlowShape(in, out)
 
     override def createLogic(inheritedAttributes: Attributes): GraphStageLogic =
@@ -104,6 +109,43 @@ object Xml {
             }
           } else completeStage()
         }
+      }
+  }
+
+  private class Coalesce(maximumTextLength: Int) extends GraphStage[FlowShape[ParseEvent, ParseEvent]] {
+    val in: Inlet[ParseEvent] = Inlet("XML.Coalesce.in")
+    val out: Outlet[ParseEvent] = Outlet("XML.Coalesce.out")
+    override val shape: FlowShape[ParseEvent, ParseEvent] = FlowShape(in, out)
+
+    override def createLogic(inheritedAttributes: Attributes): GraphStageLogic =
+      new GraphStageLogic(shape) with InHandler with OutHandler {
+        private var isBuffering = false
+        private var buffer = new StringBuilder
+
+        override def onPush(): Unit = grab(in) match {
+          case t: TextEvent =>
+            if (t.text.length + buffer.length > maximumTextLength)
+              failStage(new IllegalStateException(s"Too long character sequence, maximum is $maximumTextLength but got " +
+                s"${t.text.length + buffer.length - maximumTextLength} more "))
+            else {
+              buffer.append(t.text)
+              isBuffering = true
+              pull(in)
+            }
+          case other =>
+            if (isBuffering) {
+              val coalesced = buffer.toString()
+              isBuffering = false
+              buffer.clear()
+              emit(out, Characters(coalesced), () => emit(out, other))
+            } else {
+              push(out, other)
+            }
+        }
+
+        override def onPull(): Unit = pull(in)
+
+        setHandlers(in, out, this)
       }
   }
 
