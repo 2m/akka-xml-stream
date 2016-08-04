@@ -1,8 +1,9 @@
+package com.drewhk.stream.xml
+
 import akka.actor.ActorSystem
 import akka.stream.ActorMaterializer
 import akka.stream.scaladsl.{Flow, Keep, Sink, Source}
 import akka.util.ByteString
-import com.drewhk.stream.xml.Xml
 import com.drewhk.stream.xml.Xml._
 import org.scalatest.{BeforeAndAfterAll, Matchers, WordSpec}
 

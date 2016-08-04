@@ -1,8 +1,5 @@
 package com.drewhk.stream.xml
 
-import javax.xml.namespace.QName
-import javax.xml.stream.events.{Attribute, Namespace}
-
 import akka.NotUsed
 import akka.stream.scaladsl.Flow
 import akka.stream.{Attributes, FlowShape, Inlet, Outlet}
@@ -36,6 +33,9 @@ object Xml {
   def coalesce(maximumTextLength: Int): Flow[ParseEvent, ParseEvent, NotUsed] =
     Flow.fromGraph(new Coalesce(maximumTextLength))
 
+  def subslice(path: immutable.Seq[String]): Flow[ParseEvent, ParseEvent, NotUsed] =
+    Flow.fromGraph(new Subslice(path))
+
   private class StreamingXmlParser extends GraphStage[FlowShape[ByteString, ParseEvent]] {
     val in: Inlet[ByteString] = Inlet("XML.Parser.in")
     val out: Outlet[ParseEvent] = Outlet("XML.Parser.out")
@@ -62,6 +62,7 @@ object Xml {
         override def onUpstreamFinish(): Unit = {
           parser.getInputFeeder.endOfInput()
           if (!parser.hasNext) completeStage()
+          else if (isAvailable(out)) advanceParser()
         }
 
         @tailrec private def advanceParser(): Unit = {
@@ -148,5 +149,85 @@ object Xml {
         setHandlers(in, out, this)
       }
   }
+
+  private class Subslice(path: immutable.Seq[String]) extends GraphStage[FlowShape[ParseEvent, ParseEvent]] {
+    val in: Inlet[ParseEvent] = Inlet("XML.Coalesce.in")
+    val out: Outlet[ParseEvent] = Outlet("XML.Coalesce.out")
+    override val shape: FlowShape[ParseEvent, ParseEvent] = FlowShape(in, out)
+
+    override def createLogic(inheritedAttributes: Attributes): GraphStageLogic =
+      new GraphStageLogic(shape) with OutHandler {
+        private var expected = path.toList
+        private var matchedSoFar: List[String] = Nil
+
+        override def onPull(): Unit = pull(in)
+
+        if (path.isEmpty) setHandler(in, passThrough) else setHandler(in, partialMatch)
+        setHandler(out, this)
+
+        val passThrough: InHandler = new InHandler {
+          var depth = 0
+
+          override def onPush(): Unit = grab(in) match {
+            case start: StartElement =>
+              depth += 1
+              push(out, start)
+            case end: EndElement =>
+              if (depth == 0) {
+                expected = matchedSoFar.head :: expected
+                matchedSoFar = matchedSoFar.tail
+                setHandler(in, partialMatch)
+                pull(in)
+              } else {
+                depth -= 1
+                push(out, end)
+              }
+            case other =>
+              push(out, other)
+          }
+        }
+
+        lazy val partialMatch: InHandler = new InHandler {
+
+          override def onPush(): Unit = grab(in) match {
+            case StartElement(name, _) =>
+              if (name == expected.head) {
+                matchedSoFar = expected.head :: matchedSoFar
+                expected = expected.tail
+                if (expected.isEmpty) {
+                  setHandler(in, passThrough)
+                }
+              } else {
+                setHandler(in, noMatch)
+              }
+              pull(in)
+            case EndElement(name) =>
+              expected = matchedSoFar.head :: expected
+              matchedSoFar = matchedSoFar.tail
+              pull(in)
+            case other =>
+              pull(in)
+          }
+
+        }
+
+        lazy val noMatch: InHandler = new InHandler {
+          var depth = 0
+
+          override def onPush(): Unit = grab(in) match {
+            case start: StartElement =>
+              depth += 1
+              pull(in)
+            case end: EndElement =>
+              if (depth == 0) setHandler(in, partialMatch)
+              else depth -= 1
+              pull(in)
+            case other =>
+              pull(in)
+          }
+        }
+
+      }
+    }
 
 }
