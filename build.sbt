@@ -15,3 +15,5 @@ libraryDependencies += "com.typesafe.akka" %% "akka-actor" % AkkaVersion
 libraryDependencies += "com.typesafe.akka" %% "akka-stream" % AkkaVersion
 
 libraryDependencies += "com.fasterxml" % "aalto-xml" % "1.0.0"
+
+libraryDependencies += "org.scalatest" %% "scalatest" % "3.0.0" % "test"
